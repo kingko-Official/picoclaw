@@ -542,12 +542,16 @@ func defaultChannels() ChannelsConfig {
 				"webhook_path": "/webhook/line",
 			},
 		},
-		"onebot": map[string]any{
-			"settings": map[string]any{
-				"ws_url":             "ws://127.0.0.1:3001",
-				"reconnect_interval": 5,
+			"onebot": map[string]any{
+				"settings": map[string]any{
+					"mode":               "forward_ws",
+					"ws_url":             "ws://127.0.0.1:3001",
+					"listen_addr":        "127.0.0.1:3002",
+					"ws_path":            "/onebot/ws",
+					"allow_origins":      []string{},
+					"reconnect_interval": 5,
+				},
 			},
-		},
 		"wecom": map[string]any{
 			"settings": map[string]any{
 				"websocket_url":         "wss://openws.work.weixin.qq.com",

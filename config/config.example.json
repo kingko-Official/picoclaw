@@ -241,7 +241,11 @@
         "prefixes": []
       },
       "settings": {
+        "mode": "forward_ws",
         "ws_url": "ws://127.0.0.1:3001",
+        "listen_addr": "127.0.0.1:3002",
+        "ws_path": "/onebot/ws",
+        "allow_origins": [],
         "access_token": "",
         "reconnect_interval": 5
       }
