@@ -546,10 +546,14 @@ type LINESettings struct {
 }
 
 type OneBotSettings struct {
-	WSUrl              string       `json:"ws_url"                yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_URL"`
-	AccessToken        SecureString `json:"access_token,omitzero" yaml:"access_token,omitempty" env:"PICOCLAW_CHANNELS_ONEBOT_ACCESS_TOKEN"`
-	ReconnectInterval  int          `json:"reconnect_interval"    yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
-	GroupTriggerPrefix []string     `json:"group_trigger_prefix"  yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
+	Mode               string       `json:"mode,omitempty"         yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_MODE"`
+	WSUrl              string       `json:"ws_url"                 yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_URL"`
+	ListenAddr         string       `json:"listen_addr,omitempty"  yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_LISTEN_ADDR"`
+	WSPath             string       `json:"ws_path,omitempty"      yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_PATH"`
+	AllowOrigins       []string     `json:"allow_origins,omitempty" yaml:"-"                     env:"PICOCLAW_CHANNELS_ONEBOT_ALLOW_ORIGINS"`
+	AccessToken        SecureString `json:"access_token,omitzero"  yaml:"access_token,omitempty" env:"PICOCLAW_CHANNELS_ONEBOT_ACCESS_TOKEN"`
+	ReconnectInterval  int          `json:"reconnect_interval"     yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
+	GroupTriggerPrefix []string     `json:"group_trigger_prefix"   yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
 }
 
 type WeComGroupConfig struct {

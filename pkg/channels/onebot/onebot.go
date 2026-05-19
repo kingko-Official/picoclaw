@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type OneBotChannel struct {
 	pending       map[string]chan json.RawMessage
 	pendingMu     sync.Mutex
 	lastMessageID sync.Map
+	wsServer      *http.Server
 }
 
 type oneBotRawEvent struct {
@@ -150,32 +152,47 @@ func (c *OneBotChannel) ReactToMessage(ctx context.Context, chatID, messageID st
 }
 
 func (c *OneBotChannel) Start(ctx context.Context) error {
-	if c.config.WSUrl == "" {
-		return fmt.Errorf("OneBot ws_url not configured")
+	mode := strings.TrimSpace(c.config.Mode)
+	if mode == "" {
+		mode = "forward_ws"
 	}
 
 	logger.InfoCF("onebot", "Starting OneBot channel", map[string]any{
-		"ws_url": c.config.WSUrl,
+		"mode": mode,
 	})
 
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
-	if err := c.connect(); err != nil {
-		logger.WarnCF("onebot", "Initial connection failed, will retry in background", map[string]any{
-			"error": err.Error(),
-		})
-	} else {
-		go c.listen()
-		c.fetchSelfID()
+	switch mode {
+	case "forward_ws":
+		if c.config.WSUrl == "" {
+			return fmt.Errorf("OneBot ws_url not configured for forward_ws mode")
+		}
+
+		if err := c.connect(); err != nil {
+			logger.WarnCF("onebot", "Initial connection failed, will retry in background", map[string]any{
+				"error": err.Error(),
+			})
+		} else {
+			go c.listen()
+			c.fetchSelfID()
+		}
+
+		if c.config.ReconnectInterval > 0 {
+			go c.reconnectLoop()
+		} else {
+			if c.conn == nil {
+				return fmt.Errorf("failed to connect to OneBot and reconnect is disabled")
+			}
+		}
+	case "reverse_ws":
+		if err := c.startReverseWSServer(); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid onebot mode %q: must be forward_ws or reverse_ws", mode)
 	}
 
-	if c.config.ReconnectInterval > 0 {
-		go c.reconnectLoop()
-	} else {
-		if c.conn == nil {
-			return fmt.Errorf("failed to connect to OneBot and reconnect is disabled")
-		}
-	}
 
 	c.SetRunning(true)
 	logger.InfoC("onebot", "OneBot channel started successfully")
@@ -386,6 +403,12 @@ func (c *OneBotChannel) Stop(ctx context.Context) error {
 	c.pendingMu.Unlock()
 
 	c.mu.Lock()
+	if c.wsServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = c.wsServer.Shutdown(shutdownCtx)
+		cancel()
+		c.wsServer = nil
+	}
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
@@ -393,6 +416,121 @@ func (c *OneBotChannel) Stop(ctx context.Context) error {
 	c.mu.Unlock()
 
 	return nil
+}
+
+func (c *OneBotChannel) startReverseWSServer() error {
+	listenAddr := strings.TrimSpace(c.config.ListenAddr)
+	if listenAddr == "" {
+		return fmt.Errorf("OneBot listen_addr not configured for reverse_ws mode")
+	}
+	wsPath := strings.TrimSpace(c.config.WSPath)
+	if wsPath == "" {
+		wsPath = "/onebot/ws"
+	}
+	if !strings.HasPrefix(wsPath, "/") {
+		wsPath = "/" + wsPath
+	}
+
+	allowedOrigins := make(map[string]struct{}, len(c.config.AllowOrigins))
+	for _, origin := range c.config.AllowOrigins {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			allowedOrigins[origin] = struct{}{}
+		}
+	}
+	checkOrigin := func(r *http.Request) bool {
+		if len(allowedOrigins) == 0 {
+			return true
+		}
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return false
+		}
+		_, ok := allowedOrigins[origin]
+		return ok
+	}
+
+	upgrader := websocket.Upgrader{
+		HandshakeTimeout: 10 * time.Second,
+		CheckOrigin:      checkOrigin,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(wsPath, func(w http.ResponseWriter, r *http.Request) {
+		if !c.authorizeReverseWS(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			logger.WarnCF("onebot", "Reverse WS upgrade failed", map[string]any{"error": err.Error()})
+			return
+		}
+		conn.SetPongHandler(func(appData string) error {
+			_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			return nil
+		})
+		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+		c.mu.Lock()
+		prev := c.conn
+		c.conn = conn
+		c.mu.Unlock()
+		if prev != nil {
+			_ = prev.Close()
+		}
+
+		go c.pinger(conn)
+		go c.listen()
+		c.fetchSelfID()
+
+		logger.InfoCF("onebot", "Reverse WS client connected", map[string]any{
+			"remote_addr": r.RemoteAddr,
+			"path":        wsPath,
+		})
+	})
+
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	c.mu.Lock()
+	c.wsServer = server
+	c.mu.Unlock()
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.ErrorCF("onebot", "Reverse WS server stopped unexpectedly", map[string]any{
+				"error": err.Error(),
+			})
+		}
+	}()
+
+	logger.InfoCF("onebot", "Reverse WS server started", map[string]any{
+		"listen_addr":  listenAddr,
+		"path":         wsPath,
+		"origin_count": len(allowedOrigins),
+	})
+	return nil
+}
+
+func (c *OneBotChannel) authorizeReverseWS(r *http.Request) bool {
+	token := strings.TrimSpace(c.config.AccessToken.String())
+	if token == "" {
+		return true
+	}
+
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if auth == "Bearer "+token {
+		return true
+	}
+	if strings.TrimSpace(r.URL.Query().Get("access_token")) == token {
+		return true
+	}
+	return false
 }
 
 func (c *OneBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
